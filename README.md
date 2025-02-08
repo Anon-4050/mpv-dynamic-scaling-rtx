@@ -1,9 +1,9 @@
-# MPV Dynamic Scaling Script
+# MPV Dynamic Scaling Script using RTX
 
 A Lua script for MPV that dynamically adjusts scaling filters based on:
 - Window/display size (supports fullscreen/windowed mode)
 - Video properties (HDR, pixel format)
-- NVIDIA GPU optimizations (`d3d11vpp` filter)
+- NVIDIA RTX optimizations (`d3d11vpp` filter)
 
 ## Features
 - Automatically updates scaling when resizing the window or toggling fullscreen.
