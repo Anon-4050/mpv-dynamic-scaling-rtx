@@ -14,11 +14,12 @@ A Lua script for MPV that dynamically adjusts scaling filters based on:
 1. Save the script as `dynamic_scaling.lua` in your MPV scripts folder:
    - **Windows:** `%APPDATA%\mpv\scripts\`
    - **Linux/macOS:** `~/.config/mpv/scripts/`
-2. Restart MPV.
+2. Use provided mpv.config. Add addl parameters if you need specifically (keep observing latency through video-flow)
+3. Restart MPV.
 
 ## Requirements
-- MPV player (with Direct3D11 support)
-- NVIDIA GPU (for `nvidia-true-hdr` optimization)
+- MPV player (with Direct3D11 support - tested on 0.39)
+- NVIDIA RTX GPU (for `nvidia-true-hdr` optimization)
 - Windows or Linux (tested on these platforms)
 
 ## License
