@@ -1,19 +1,40 @@
--- smooth.lua v2.1: motion smoothing, Alt+i.
+-- smooth.lua  v2.3.1: interpolation (motion smoothing), Alt+i. Direct choice: script-message-to smooth set-mode auto|on|off.
 -- Smoothing = interpolation=yes + tscale=oversample: mpv blends the two real frames around each display refresh where
 -- they straddle it (no motion invention, no new frames). Needs video-sync=display-resample* (mpv.conf keeps
 -- display-resample-vdrop).
 -- Modes (option smooth-default=auto|on|off, default auto; Alt+i or the panel button cycles auto -> on -> off -> auto
--- for the session, OSD shows the mode and whether it is applied):
+-- until mpv quits, OSD shows the mode and whether it is applied):
 --   auto: ON only when the cadence does not match - display-resample active and the display rate is NOT a whole
 --         multiple of the video rate (e.g. 25 fps on 120 Hz). Stays off for 24/30/60 fps on 120 Hz ("even cadence"),
---         without display resample ("no resample") and without video.
---   on:   ON whenever there is video (forced; useful only to compare).
+--         without display resample ("no resample"), without video, for a heavy file ("heavy file") and for the rest
+--         of a file once frames drop ("frames dropping").
+--   on:   ON whenever there is video (forced; useful only to compare). Ignores the heavy-file and drop rules.
 --   off:  never.
 -- Publishes user-data/smooth = {mode, want, on, na} for rtx-panel.lua (want = mode ~= "off"; na = why auto is off).
+--
+-- Heavy files and drops (v2.3): auto stays off when the decoded pixel rate (w*h*fps, before any RTX upscale) is
+-- above heavy_mpxs, and a watchdog turns it off for the rest of the file when dropped + delayed frames reach
+-- drop_limit within drop_window seconds while it is on (one OSD line). A seek, (re)start, fullscreen toggle or filter change re-arms a grace period.
+-- Options (mpv.conf: script-opts-append=smooth-<name>=<value>): default, heavy_mpxs (250 Mpx/s; 0 = no static rule),
+--   heavy_bits (0 = any bit depth), drop_limit (4), drop_window (10 s), grace (3 s).
+-- Calibration (one laptop RTX GPU, 60 Hz display, fullscreen, 20 s per run, 2 runs each, interpolation
+-- on vs off): GPU load on/off - 1080p 10-bit HEVC 24p (RTX VSR running) 37.9/36.6 and 43.2/38.1 %; 4K 8-bit HEVC 25p
+-- 27.6/27.4 and 28.4/27.3 %; 4K 10-bit PQ HDR HEVC 24p 32.8/31.5 and 31.6/28.6 %. So interpolation cost at most
+-- ~5 GPU points; dropped/delayed frames with interpolation on: 0 in all 6 runs. 4K without VSR is the light case
+-- (GPU ~0.9 GHz / 11 W against ~2.4 GHz / 33-38 W for 1080p + VSR), and no tested class is heavy at 60 Hz.
+-- So the static rule only catches what lies beyond the tested range: more than 250 Mpx/s decoded (4K above 30 fps,
+-- e.g. 4K50; tested max 3840x1600x23.976 = 147 Mpx/s). The watchdog covers the rest, per machine.
 
 local mp = require 'mp'
 local options = require 'mp.options'
-local opts = { default = "auto" }
+local opts = {
+    default = "auto",
+    heavy_mpxs = 250,     -- decoded pixel rate (Mpx/s, w*h*fps) above which a file is heavy; 0 = no static rule ...
+    heavy_bits = 0,       -- ... and only when the bit depth is at least this (0 = any depth)
+    drop_limit = 4,       -- watchdog: this many dropped + delayed frames ...
+    drop_window = 10,     -- ... within this many seconds of play with interpolation on turns it off for the file
+    grace = 3,            -- seconds after a (re)start or seek that the watchdog ignores
+}
 options.read_options(opts, "smooth")
 
 local MODES = { auto = true, on = true, off = true }
@@ -53,9 +74,37 @@ local function na_reason()
     return ""
 end
 
+-- v2.3 heavy file: decoded size (not the RTX-upscaled output) and bit depth from the decoder's pixel format
+-- (yuv420p10le -> 10, p010 -> 10, nv12/yuv420p -> 8).
+local function bits_of(pf)
+    pf = tostring(pf or "")
+    return tonumber(pf:match("^p0(%d%d)") or pf:match("p(%d%d)") or pf:match("^y(%d%d)")) or 8
+end
+local function heavy()
+    local p = mp.get_property_native("video-dec-params")
+    if opts.heavy_mpxs <= 0 or not p or not p.w or not p.h then return false end
+    local fps = mp.get_property_number("container-fps") or mp.get_property_number("estimated-vf-fps") or 0
+    return p.w * p.h * fps / 1e6 > opts.heavy_mpxs and bits_of(p.pixelformat) >= opts.heavy_bits
+end
+
+-- v2.3 watchdog: while auto has interpolation on and the file plays, count new dropped + delayed frames over a
+-- sliding window; over the limit -> off for the rest of this file ("frames dropping"), one OSD line.
+local tripped, grace_until, hist = false, 0, {}
+local function counts()
+    return (mp.get_property_number("frame-drop-count") or 0) + (mp.get_property_number("vo-delayed-frame-count") or 0)
+end
+local function rearm() grace_until = mp.get_time() + opts.grace; hist = {} end
+local function auto_na()
+    local na = na_reason()
+    if na ~= "" then return na end
+    if heavy() then return "heavy file" end
+    if tripped then return "frames dropping" end
+    return ""
+end
+
 local last = nil
 local function update(announce)
-    local na = na_reason()
+    local na = mode == "auto" and auto_na() or na_reason()
     local on = (mode == "on" and has_video()) or (mode == "auto" and na == "")
     if mp.get_property_bool("interpolation") ~= on then
         if on then mp.set_property("tscale", "oversample") end
@@ -70,15 +119,44 @@ local function update(announce)
     if announce then
         local s = mode == "auto" and ("AUTO - " .. (on and "on (cadence does not match)" or ("off (" .. na .. ")")))
             or mode == "on" and "ON (forced)" or "OFF"
-        mp.osd_message("Smooth motion: " .. s, 2)
+        mp.osd_message("Interpolation: " .. s, 2)
     end
 end
 
 local NEXT = { auto = "on", on = "off", off = "auto" }
 mp.add_key_binding("Alt+i", "toggle", function() mode = NEXT[mode]; update(true) end)
+-- v2.2 (rtx-panel direct choice): script-message set-mode auto|on|off (no-op when already set).
+mp.register_script_message("set-mode", function(v)
+    v = alias[tostring(v or ""):lower()] or tostring(v or ""):lower()
+    if MODES[v] and v ~= mode then mode = v; update(true) end
+end)
 for _, p in ipairs({ "current-tracks/video", "video-sync", "display-sync-active", "display-fps", "container-fps" }) do
     mp.observe_property(p, "native", function() update(false) end)
 end
+mp.observe_property("video-dec-params", "native", function() update(false) end)
+-- v2.3 watchdog state: per file; a seek or (re)start re-arms the grace period (seek/start drops are not load).
+mp.register_event("start-file", function() tripped = false; rearm() end)
+mp.register_event("playback-restart", rearm)
+mp.observe_property("pause", "bool", function(_, p) if not p then rearm() end end)
+-- A fullscreen toggle or a filter-chain rebuild (crop/VSR change) drops frames by itself: re-arm too.
+mp.observe_property("fullscreen", "bool", rearm)
+mp.observe_property("vf", "native", rearm)
+local function watchdog()
+    if mode ~= "auto" or tripped or not mp.get_property_bool("interpolation", false) then hist = {}; return end
+    if mp.get_property_bool("pause", false) or mp.get_property_bool("seeking", false) then hist = {}; return end
+    local now = mp.get_time()
+    if now < grace_until then hist = {}; return end
+    local c = counts()
+    hist[#hist + 1] = { t = now, c = c }
+    while #hist > 1 and now - hist[1].t > opts.drop_window do table.remove(hist, 1) end
+    if c - hist[1].c >= opts.drop_limit then
+        tripped = true
+        mp.msg.info(string.format("smooth: %d dropped/delayed frames in %.0f s with interpolation on -> off for this file",
+            c - hist[1].c, now - hist[1].t))
+        update(false)
+        mp.osd_message("Interpolation off for this file: frames dropping", 3)
+    end
+end
 -- display-sync-active is not reported to observers; re-check once a second (cheap, no change = no action).
-mp.add_periodic_timer(1, function() update(false) end)
+mp.add_periodic_timer(1, function() watchdog(); update(false) end)
 update(false)
