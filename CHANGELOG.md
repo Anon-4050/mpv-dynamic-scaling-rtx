@@ -4,60 +4,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions: [Sem
 (major = breaking config or key changes, minor = new features, patch = fixes). Each release has a git tag `vX.Y.Z`.
 
 ## [Unreleased]
-- Planned: Intel GPU pipeline.
-
-## [1.3.0] - 2026-11-25
-Scripts: `aspect-rtx.lua` v4.8.1, `rtx-panel.lua` v3.7.0, `smooth.lua` v2.4.1, `binaural.lua` v1.7.0,
-`eq.lua` v1.0.0 (replaces `kz-eq.lua`), `peak.lua` v1.7.0. A load audit of the player pipeline (no change to sound or
-picture), release defaults, and the headphone EQ as your own profile.
-### Changed
-- Headphone EQ: `kz-eq.lua` becomes `eq.lua`, a loader for your own AutoEQ profile (ParametricEQ or GraphicEQ
-  files in `script-opts/eq/`); the card's EQ row lists them. No profile ships and the EQ is off by default. Options
-  `kz_eq-*` are now `eq-*` (1.2.0 was never published, so no released config changes).
-- The video filter chain is built once per file; a peak change re-tags only the luma tag, so RTX HDR is not
-  re-initialised. Implausible peaks (mpv's 10000 placeholder, or above `peak_max`) are ignored.
-- The audio chain is built once, before the audio output opens (one output init per file instead of two); the
-  headphone device is remembered between files. Output verified bit-identical before and after.
-- State shared with the panel is published only when it changes; detailed log listening is narrowed.
-- One reader of the dropped-frame counters (`smooth.lua` publishes them; the VSR stutter guard uses that).
-- No live peak meter on a path whose measurement is already complete.
-### Fixed
-- "Measure now" while a measurement is already running no longer restarts it; it shows the progress.
-- The VSR stutter guard and the smooth watchdog ignore drops for 3 s after any transition (start, seek, chain change, fullscreen, resize, audio re-init, display mode change); only steady-state stutter counts.
-- The card no longer opens on any mouse movement near the top right: only over the small status box or at the right edge (option `edge_px`, default 4 px); it closes shortly after the pointer leaves it.
-### Added
-- `peak` option `store_dir=root` with `roots=<folder;folder>`: one hidden `.mpv-measure` index per media root, keyed by file content, so measurements follow files when they move or are renamed. Default unchanged.
-- Card: **Make default** / **Reset default** on the Preset row.
-- Release defaults: picture and sound as made; crop, RTX HDR, smoothing and EQ off; VSR only on an NVIDIA RTX GPU; peak guard on. See README "Defaults and why".
-- `rtx-panel` option `immersive_show` (fill | half | fit, default fill): the Show mode the Immersive preset sets.
-
-## [1.2.0] - 2026-11-24
-Scripts: `aspect-rtx.lua` v4.5.2, `rtx-panel.lua` v3.3.0, `smooth.lua` v2.3.1, new `binaural.lua` v1.6.1,
-`kz-eq.lua`, `peak.lua` v1.4.0.
-### Added
-- Audio: `binaural.lua` (3D audio: surround on calibrated virtual speakers through the SADIE II HRTF; 3D stereo: stereo
-  on two virtual front speakers), gated to the headphone devices you list. The HRTF file is linked, not included.
-- Audio: `kz-eq.lua` headphone EQ, with a KZ ZSN Pro example and options `graphic_eq` / `preamp` for any AutoEQ
-  GraphicEQ result.
-- Audio: `peak.lua` clip guard: one static negative trim per file to stay under -1 dBTP (no limiter, no compression);
-  measured per file and path; **Measure folder** on the card and `peak-analyze=<folder>` measure ahead; `store_dir`,
-  `lookahead`.
-- Audio: measurement pass (`peak-auto_measure`, default on): an unmeasured file is measured in a fast background
-  pass while it plays; the measured trim is applied when done (0.2 s ramp). `Alt+P` / card **Measure now** on demand.
-- Audio: pre-roll (`peak-preroll_max`, default off): a short unmeasured file holds its start until measured, like a
-  stream buffering; scripts share start holds through `user-data/start_hold/<script>`.
-- Crop Auto now detects black bars burned into the picture (one-shot per file); new row **Show as** (Fit | Half | Fill).
-- VSR: `vsr_min_scale` (1.3: no VSR below it, "scale too small") and a stutter guard (VSR off for the file after 10
-  dropped + delayed frames in 4 s, "VSR off: stutter").
-- RTX HDR mode Off | Fullscreen | Always (`hdr_mode`).
-- Card along the signal chain (Preset > Source > Video > Audio), compact view with More / Less, presets Faithful |
-  Immersive | Custom (`rtx_panel-preset`), a status line for background work and applied marks.
-- README: what it is for, the pipeline each feature needs, what breaks a feature, Faithful vs Immersive, why it
-  sounds different.
-### Changed
-- Option `crop` replaces `bars` / `start` (old names still read); sample `mpv.conf` uses `crop=auto`, sets `volume=100`.
-### Fixed
-- 3D audio without the HRTF file stays off with the reason "no HRTF file" instead of failing the audio filter chain.
+- Planned: Intel GPU pipeline; optional automatic bar detection if it passes testing.
 
 ## [1.1.0] - 2026-11-23
 Scripts: `aspect-rtx.lua` v4.0.3, `rtx-panel.lua` v2.3.1, `smooth.lua` v2.3.1.
