@@ -1,29 +1,6 @@
--- smooth.lua  v2.3.1: interpolation (motion smoothing), Alt+i. Direct choice: script-message-to smooth set-mode auto|on|off.
--- Smoothing = interpolation=yes + tscale=oversample: mpv blends the two real frames around each display refresh where
--- they straddle it (no motion invention, no new frames). Needs video-sync=display-resample* (mpv.conf keeps
--- display-resample-vdrop).
--- Modes (option smooth-default=auto|on|off, default auto; Alt+i or the panel button cycles auto -> on -> off -> auto
--- until mpv quits, OSD shows the mode and whether it is applied):
---   auto: ON only when the cadence does not match - display-resample active and the display rate is NOT a whole
---         multiple of the video rate (e.g. 25 fps on 120 Hz). Stays off for 24/30/60 fps on 120 Hz ("even cadence"),
---         without display resample ("no resample"), without video, for a heavy file ("heavy file") and for the rest
---         of a file once frames drop ("frames dropping").
---   on:   ON whenever there is video (forced; useful only to compare). Ignores the heavy-file and drop rules.
---   off:  never.
--- Publishes user-data/smooth = {mode, want, on, na} for rtx-panel.lua (want = mode ~= "off"; na = why auto is off).
---
--- Heavy files and drops (v2.3): auto stays off when the decoded pixel rate (w*h*fps, before any RTX upscale) is
--- above heavy_mpxs, and a watchdog turns it off for the rest of the file when dropped + delayed frames reach
--- drop_limit within drop_window seconds while it is on (one OSD line). A seek, (re)start, fullscreen toggle or filter change re-arms a grace period.
--- Options (mpv.conf: script-opts-append=smooth-<name>=<value>): default, heavy_mpxs (250 Mpx/s; 0 = no static rule),
---   heavy_bits (0 = any bit depth), drop_limit (4), drop_window (10 s), grace (3 s).
--- Calibration (one laptop RTX GPU, 60 Hz display, fullscreen, 20 s per run, 2 runs each, interpolation
--- on vs off): GPU load on/off - 1080p 10-bit HEVC 24p (RTX VSR running) 37.9/36.6 and 43.2/38.1 %; 4K 8-bit HEVC 25p
--- 27.6/27.4 and 28.4/27.3 %; 4K 10-bit PQ HDR HEVC 24p 32.8/31.5 and 31.6/28.6 %. So interpolation cost at most
--- ~5 GPU points; dropped/delayed frames with interpolation on: 0 in all 6 runs. 4K without VSR is the light case
--- (GPU ~0.9 GHz / 11 W against ~2.4 GHz / 33-38 W for 1080p + VSR), and no tested class is heavy at 60 Hz.
--- So the static rule only catches what lies beyond the tested range: more than 250 Mpx/s decoded (4K above 30 fps,
--- e.g. 4K50; tested max 3840x1600x23.976 = 147 Mpx/s). The watchdog covers the rest, per machine.
+-- smooth.lua  v2.4.1  - mpv interpolation only where it helps: Auto turns it on when the frame rate does not divide
+-- into the display refresh (judder, e.g. 25 fps on 60 Hz) and off for heavy files or when frames drop; On / Off force it.
+-- Key Alt+i cycles Auto -> On -> Off; script-message set-mode auto|on|off. Option smooth-default (auto | on | off).
 
 local mp = require 'mp'
 local options = require 'mp.options'
@@ -51,8 +28,8 @@ local function na_reason()
     if not tostring(mp.get_property("video-sync", "")):find("^display%-resample") then return "no resample" end
     if not mp.get_property_bool("display-sync-active", false) then return "no resample" end
     local dfps = mp.get_property_number("display-fps")
-    -- container rate first. Without it, mpv's estimate wobbles (28.98 for a 30 fps clip), which would turn auto ON on an
-    -- even cadence, so the estimate is snapped to a standard rate within 4 %,
+    -- container rate first. Without it, mpv's estimate wobbles (28.98 for a 30 fps clip), which turned auto ON on an
+    -- even cadence in fullscreen (rollback check rb_fs30), so v2.1 snaps the estimate to a standard rate within 4 %,
     -- and stays off ("fps unknown") when it cannot.
     local vfps = mp.get_property_number("container-fps")
     if not vfps or vfps <= 0 then
@@ -125,7 +102,7 @@ end
 
 local NEXT = { auto = "on", on = "off", off = "auto" }
 mp.add_key_binding("Alt+i", "toggle", function() mode = NEXT[mode]; update(true) end)
--- v2.2 (rtx-panel direct choice): script-message set-mode auto|on|off (no-op when already set).
+-- v2.2 (2026-11-21, rtx-panel v2 direct choice): script-message set-mode auto|on|off (no-op when already set).
 mp.register_script_message("set-mode", function(v)
     v = alias[tostring(v or ""):lower()] or tostring(v or ""):lower()
     if MODES[v] and v ~= mode then mode = v; update(true) end
@@ -138,15 +115,16 @@ mp.observe_property("video-dec-params", "native", function() update(false) end)
 mp.register_event("start-file", function() tripped = false; rearm() end)
 mp.register_event("playback-restart", rearm)
 mp.observe_property("pause", "bool", function(_, p) if not p then rearm() end end)
--- A fullscreen toggle or a filter-chain rebuild (crop/VSR change) drops frames by itself: re-arm too.
+-- v2.3.1 (review F9): a fullscreen toggle or a filter-chain rebuild (crop/VSR change) drops frames by itself: re-arm too.
 mp.observe_property("fullscreen", "bool", rearm)
 mp.observe_property("vf", "native", rearm)
-local function watchdog()
+-- display mode changes re-arm the grace period too
+for _, p in ipairs({ "osd-dimensions", "audio-out-params", "display-fps", "user-data/winhdr" }) do mp.observe_property(p, "native", rearm) end
+local function watchdog(c)
     if mode ~= "auto" or tripped or not mp.get_property_bool("interpolation", false) then hist = {}; return end
     if mp.get_property_bool("pause", false) or mp.get_property_bool("seeking", false) then hist = {}; return end
     local now = mp.get_time()
     if now < grace_until then hist = {}; return end
-    local c = counts()
     hist[#hist + 1] = { t = now, c = c }
     while #hist > 1 and now - hist[1].t > opts.drop_window do table.remove(hist, 1) end
     if c - hist[1].c >= opts.drop_limit then
@@ -158,5 +136,13 @@ local function watchdog()
     end
 end
 -- display-sync-active is not reported to observers; re-check once a second (cheap, no change = no action).
-mp.add_periodic_timer(1, function() watchdog(); update(false) end)
+-- v2.4.0 (pipeline audit, watchdog merge): the one reader of the drop counters. Each second it reads dropped +
+-- delayed frames once and publishes user-data/drops = { c = total } when the total changed; aspect-rtx's VSR guard
+-- counts from that instead of polling the counters itself.
+local last_c = nil
+mp.add_periodic_timer(1, function()
+    local c = counts()
+    if c ~= last_c then last_c = c; mp.set_property_native("user-data/drops", { c = c }) end
+    watchdog(c); update(false)
+end)
 update(false)
